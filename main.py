@@ -127,7 +127,7 @@ def run_webcam_mode(config):
     import signal
     import atexit
     from PyQt5.QtWidgets import QApplication
-    from PyQt5.QtCore import QThread
+    from PyQt5.QtCore import QThread, Qt
     from webcam import WebcamWorker, Gesture
     from ui import OverlayWindow
     
@@ -197,12 +197,12 @@ def run_webcam_mode(config):
             overlay.cancel_swipe()
             print("Action: Swipe aborted (hand lost)")
 
-    # Connect signals
+    # Connect signals (Use QueuedConnection to ensure UI updates happen in main thread)
     thread.started.connect(worker.start_process)
-    worker.gesture_detected.connect(handle_gesture)
-    worker.hand_lost.connect(handle_hand_lost)
-    worker.frame_ready.connect(overlay.set_webcam_frame)
-    worker.error.connect(lambda msg: print(f"WORKER ERROR: {msg}"))
+    worker.gesture_detected.connect(handle_gesture, Qt.QueuedConnection)
+    worker.hand_lost.connect(handle_hand_lost, Qt.QueuedConnection)
+    worker.frame_ready.connect(overlay.set_webcam_frame, Qt.QueuedConnection)
+    worker.error.connect(lambda msg: print(f"WORKER ERROR: {msg}"), Qt.QueuedConnection)
     
     # Start thread
     thread.start()
@@ -217,10 +217,120 @@ def run_webcam_mode(config):
 
 
 def run_controller_mode(config):
-    """Run AirType in controller input mode."""
-    # TODO: Integrate with controller module
-    print("Controller mode - not yet implemented")
-    return 0
+    """Run AirType in controller input mode with UI overlay."""
+    import signal
+    import atexit
+    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtCore import QThread, Qt
+    from controller import ControllerWorker
+    from controller.worker import ControlMode, NavDirection
+    from ui import OverlayWindow
+    
+    app = QApplication(sys.argv)
+    
+    # Create overlay window
+    overlay = OverlayWindow(
+        position=config.ui.position,
+        layout_name=config.keyboard.layout,
+    )
+    overlay.show()
+    overlay._debug = getattr(config.ui, 'debug_overlay', False)
+    
+    # Enable controller mode (shows button hints on keys)
+    overlay.set_controller_mode(True)
+    
+    # State for gesture handling
+    is_swiping = [False]
+    
+    # Setup background worker and thread
+    thread = QThread()
+    worker = ControllerWorker(config)
+    worker.moveToThread(thread)
+    
+    def cleanup():
+        """Ensure controller is released on exit."""
+        print("\nCleaning up controller resources...")
+        worker.stop_process()
+        thread.quit()
+        thread.wait(2000)
+        print("Cleanup complete.")
+    
+    atexit.register(cleanup)
+    
+    def signal_handler(signum, frame):
+        """Handle Ctrl+C and kill signals gracefully."""
+        print(f"\nReceived signal {signum}, shutting down...")
+        app.quit()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    def handle_gesture(state):
+        """Handle gesture signals from controller worker."""
+        x, y = state.hand_position
+        
+        if state.gesture == "SWIPE_START":
+            is_swiping[0] = True
+            overlay.start_swipe(x, y)
+        
+        elif state.gesture == "SWIPE_HOLD" and is_swiping[0]:
+            overlay.update_swipe(x, y)
+        
+        elif state.gesture == "SWIPE_END" and is_swiping[0]:
+            is_swiping[0] = False
+            path = overlay.end_swipe()
+            if path:
+                print(f"Action: Finalized word path {' -> '.join(path)}")
+        
+        elif state.mode == ControlMode.CURSOR and not is_swiping[0]:
+            # Free cursor movement
+            overlay.update_hand_position(x, y)
+    
+    def handle_nav(direction):
+        """Handle D-pad navigation events."""
+        # Navigate between keys on the keyboard
+        overlay.navigate_key(direction.name.lower())
+    
+    def handle_button(action):
+        """Handle button action events."""
+        print(f"Button action received: {action}")
+        if action == "SPACE":
+            overlay.handle_special_key("SPACE")
+        elif action == "BACKSPACE":
+            overlay.handle_special_key("BACKSPACE")
+        elif action == "SHIFT":
+            overlay.handle_special_key("SHIFT")
+        elif action == "SELECT":
+            overlay.select_current_key()
+        elif action == "CLOSE":
+            print("Action: Closing application")
+            app.quit()
+        elif action == "SEND":
+            overlay.handle_special_key("ENTER")
+        elif action == "CURSOR_LEFT":
+            overlay.move_text_cursor(-1)
+        elif action == "CURSOR_RIGHT":
+            overlay.move_text_cursor(1)
+        elif action in ["PRE1", "PRE2", "PRE3"]:
+            overlay.handle_special_key(action)
+    
+    # Connect signals (Use QueuedConnection to ensure UI updates happen in main thread)
+    thread.started.connect(worker.start_process)
+    worker.gesture_detected.connect(handle_gesture, Qt.QueuedConnection)
+    worker.nav_event.connect(handle_nav, Qt.QueuedConnection)
+    worker.button_event.connect(handle_button, Qt.QueuedConnection)
+    worker.error.connect(lambda msg: print(f"CONTROLLER ERROR: {msg}"), Qt.QueuedConnection)
+    
+    # Start thread
+    thread.start()
+    
+    try:
+        result = app.exec_()
+    finally:
+        cleanup()
+        atexit.unregister(cleanup)
+    
+    return result
 
 
 def main():

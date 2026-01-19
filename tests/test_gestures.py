@@ -11,9 +11,11 @@ def test_hand_lost_resets_state(recognizer):
     # Mock a starting swipe
     recognizer._is_swiping = True
     recognizer._swipe_type = "fist"
+    recognizer._smoothed_pos = (0.5, 0.5) # Needed to enter synthetic update logic
     
-    # Send None landmarks (hand lost)
-    state = recognizer.update(None)
+    # Send None landmarks (hand lost) - needs to exceed grace frames (30)
+    for _ in range(31):
+        state = recognizer.update(None)
     
     # Verify state reset
     assert recognizer._is_swiping is False

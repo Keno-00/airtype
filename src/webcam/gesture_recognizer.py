@@ -10,6 +10,7 @@ import time
 
 from .config import GestureConfig
 from .hand_tracker import HandLandmarks
+from .one_euro_filter import OneEuroFilter
 
 
 class Gesture(Enum):
@@ -103,9 +104,10 @@ class GestureRecognizer:
         self._hand_lost_counter = 0
         self._HAND_LOST_GRACE_FRAMES = 30  
         
-        # Smoothing state (EMA)
+        # Smoothing state (One Euro Filter)
         self._smoothed_pos: Optional[Tuple[float, float]] = None
-        self._raw_landmark_ema: Optional[Tuple[float, float]] = None  # Level 0 LPF for jitter
+        self._filter_x: Optional[OneEuroFilter] = None
+        self._filter_y: Optional[OneEuroFilter] = None
         
         # Spring-damper state for "jelly" cursor feel
         self._spring_pos: Tuple[float, float] = (0.5, 0.5)  # Current rendered position
@@ -164,28 +166,33 @@ class GestureRecognizer:
             
             raw_x, raw_y = landmarks.palm_center[0], landmarks.palm_center[1]
             
-            # Level 0: Adaptive 1-pole Low Pass Filter for landmark jitter
-            # Beta increases with distance (hand_scale) to suppress magnified tremor
-            base_beta = self._config.landmark_smoothing
-            hand_scale = self._get_hand_scale()
+            # Level 0: One Euro Filter for landmark jitter
+            # improved stability at slow speeds (tremor reduction) while maintaining speed
             
-            # If scale is 2.5 (very far), beta becomes approx 0.90
-            # If scale is 0.5 (very close), beta remains around base (0.6)
-            # Farther hands need MUCH more smoothing because 1px error = 10px screen movement
-            # Increased cap to 0.98 for extreme distance stability
-            adaptive_beta = min(0.98, base_beta + (hand_scale - 1.0) * 0.25)
-            
-            if self._raw_landmark_ema is None:
-                self._raw_landmark_ema = (raw_x, raw_y)
+            if self._filter_x is None:
+                self._filter_x = OneEuroFilter(now, raw_x, 
+                    min_cutoff=self._config.one_euro_min_cutoff,
+                    beta=self._config.one_euro_beta,
+                    d_cutoff=self._config.one_euro_d_cutoff)
+                self._filter_y = OneEuroFilter(now, raw_y,
+                    min_cutoff=self._config.one_euro_min_cutoff,
+                    beta=self._config.one_euro_beta,
+                    d_cutoff=self._config.one_euro_d_cutoff)
             else:
-                ex, ey = self._raw_landmark_ema
-                self._raw_landmark_ema = (
-                    ex * adaptive_beta + raw_x * (1.0 - adaptive_beta),
-                    ey * adaptive_beta + raw_y * (1.0 - adaptive_beta)
-                )
-            
-            # Use filtered landmarks for all subsequent logic
-            raw_x, raw_y = self._raw_landmark_ema
+                # Dynamic scaling: Farther hands need more smoothing (lower cutoff)
+                scale = self._get_hand_scale()
+                # If scale is 2.0 (far), cutoff 0.5 -> 0.25 (Very smooth)
+                # If scale is 0.5 (close), cutoff 0.5 -> 1.0 (Very responsive)
+                adj_cutoff = self._config.one_euro_min_cutoff / max(0.2, scale)
+                
+                self._filter_x.min_cutoff = adj_cutoff
+                self._filter_y.min_cutoff = adj_cutoff
+                self._filter_x.beta = self._config.one_euro_beta
+                self._filter_y.beta = self._config.one_euro_beta
+                
+            raw_x = self._filter_x(now, raw_x)
+            raw_y = self._filter_y(now, raw_y)
+
             
             # Update key metrics
             pinch_dist = self._calculate_pinch_distance(landmarks)
@@ -251,7 +258,11 @@ class GestureRecognizer:
             if self._hand_lost_counter > self._HAND_LOST_GRACE_FRAMES:
                 self._smoothed_pos = None
                 self._last_raw_pos = None
-                return GestureState(gesture=Gesture.NONE)
+                was_swiping_before_loss = self._is_swiping
+                self.reset()
+                return GestureState(gesture=Gesture.SWIPE_END if was_swiping_before_loss else Gesture.NONE)
+
+
             
             # PROJECT raw position based on velocity
             # We decay velocity slightly to avoid infinite drifting

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 16" width="48" height="16">
+  <rect x="1" y="1" width="46" height="14" rx="4" ry="4" fill="#5A5A5A" stroke="#444" stroke-width="1"/>
+  <text x="24" y="11" font-family="Arial, sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">RT+→</text>
+</svg>

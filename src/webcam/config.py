@@ -33,6 +33,11 @@ class GestureConfig:
     fist_release_grace: int = 5    # Frames of grace before ending fist swipe
     fist_release_fingers: int = 3  # Fingers to extend to release a "sticky" fist
     landmark_smoothing: float = 0.6 # Low Pass Filter for raw hand jitter (0=off, 1=max)
+    
+    # One Euro Filter (Jitter reduction)
+    one_euro_min_cutoff: float = 0.5   # Hz. Lower = more smoothing when still.
+    one_euro_beta: float = 0.05        # Speed Coeff. Higher = less lag when moving.
+    one_euro_d_cutoff: float = 1.0     # Hz. Derivative smoothing.
     finger_curl_threshold: float = 0.6
     fist_threshold: float = 0.7
     swipe_min_distance: float = 0.15
@@ -86,6 +91,14 @@ class UIConfig:
 
 
 @dataclass
+class ControllerConfig:
+    deadzone: float = 0.15
+    cursor_sensitivity: float = 2.0
+    dpad_repeat_delay: int = 400  # ms
+    dpad_repeat_rate: int = 100   # ms
+
+
+@dataclass
 class Config:
     camera: CameraConfig = field(default_factory=CameraConfig)
     mediapipe: MediaPipeConfig = field(default_factory=MediaPipeConfig)
@@ -93,6 +106,7 @@ class Config:
     input: InputConfig = field(default_factory=InputConfig)
     keyboard: KeyboardConfig = field(default_factory=KeyboardConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    controller: ControllerConfig = field(default_factory=ControllerConfig)
 
 
 def _dict_to_dataclass(cls, data: dict):
@@ -135,4 +149,5 @@ def load_config(config_path: Optional[Path] = None) -> Config:
         input=_dict_to_dataclass(InputConfig, data.get('input')),
         keyboard=_dict_to_dataclass(KeyboardConfig, data.get('keyboard')),
         ui=_dict_to_dataclass(UIConfig, data.get('ui')),
+        controller=_dict_to_dataclass(ControllerConfig, data.get('controller')),
     )

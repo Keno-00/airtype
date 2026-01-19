@@ -69,3 +69,14 @@ ui:
   position: right           # 'left' or 'right' panel position
   theme: default            # Theme name or path to .qss file
   debug_overlay: false      # Show hand landmarks overlay
+
+controller:
+  # Thumbstick deadzone (0.0 - 1.0)
+  deadzone: 0.15
+  
+  # Cursor sensitivity in cursor/swipe mode (lower = slower)
+  cursor_sensitivity: 0.8
+  
+  # D-pad repeat rate (ms between repeats when held)
+  dpad_repeat_delay: 500
+  dpad_repeat_rate: 200

@@ -38,6 +38,7 @@ class OverlayWindow(QMainWindow):
         self._layout_name = layout_name
         self._prediction_index = -1
         self._drag_pos: Optional[QPoint] = None
+        self._debug = False
         
         # Text accumulation state
         self._input_text = ""   # Committed text
@@ -66,7 +67,10 @@ class OverlayWindow(QMainWindow):
         self._update_key_casing()
         
         # After UI settles, update prediction engine with REAL key positions
-        QTimer.singleShot(500, self._sync_prediction_coordinates)
+        QTimer.singleShot(1000, self._sync_prediction_coordinates)
+        
+        # Ensure predictions are hidden at startup
+        self.set_predictions([])
     
     def _setup_prediction(self):
         """Initialize the word prediction engine."""
@@ -78,10 +82,11 @@ class OverlayWindow(QMainWindow):
         
     def _sync_prediction_coordinates(self):
         """Update prediction engine with actual UI key coordinates."""
-        centers = self.keyboard.get_key_centers()
+        # Normalize relative to swipe_canvas (which covers the whole window)
+        centers = self.keyboard.get_key_centers(relative_to=self.swipe_canvas)
         if centers:
             self.prediction_engine.update_layout(centers)
-            print("Prediction coordinates synchronized with UI.")
+            print("Prediction coordinates synchronized with UI overlay.")
     
     def _setup_window(self):
         """Configure window flags and attributes."""
@@ -95,21 +100,19 @@ class OverlayWindow(QMainWindow):
     
     def _setup_ui(self):
         """Build the UI."""
-        # Central widget with background
         central = QWidget()
         central.setObjectName("CentralWidget")
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         self.setCentralWidget(central)
         
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(10, 0, 15, 10)  # Left, top, right, bottom padding
+        # 1. Main Content Container
+        main_container = QWidget()
+        main_layout = QVBoxLayout(main_container)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(main_container)
         
-        # Title bar for dragging
-        title_bar = QWidget()
-        title_bar.setObjectName("TitleBar")
-        title_bar.setFixedHeight(30)
-        title_bar.mousePressEvent = self._title_mouse_press
-        title_bar.mouseMoveEvent = self._title_mouse_move
-        layout.addWidget(title_bar)
 
         # ---------------------------------------------------------
         # Persisent Input Field (Accumulator)
@@ -122,8 +125,10 @@ class OverlayWindow(QMainWindow):
         
         self.input_field = QLineEdit()
         self.input_field.setObjectName("PersistentInputField")
-        self.input_field.setReadOnly(True)
+        # Don't set read-only so cursor is visible, but we'll filter key events
         self.input_field.setPlaceholderText("AirType...")
+        self.input_field.installEventFilter(self)  # Filter keyboard input
+        self.input_field.cursorPositionChanged.connect(self._handle_cursor_changed)
         input_layout.addWidget(self.input_field)
         
         self.send_button = QPushButton("→")
@@ -134,21 +139,9 @@ class OverlayWindow(QMainWindow):
         
         layout.addWidget(self.input_container)
         
-        # Container with stacked layout for keyboard + swipe canvas
-        container = QWidget()
-        stacked = QStackedLayout(container)
-        stacked.setStackingMode(QStackedLayout.StackAll)
-        
-        # Keyboard widget (bottom layer)
+        # Keyboard widget (Directly in main layout now)
         self.keyboard = KeyboardWidget(self._layout_name)
-        stacked.addWidget(self.keyboard)
-        
-        # Swipe canvas (top layer, transparent)
-        from .keyboard_widget import SwipeCanvas
-        self.swipe_canvas = SwipeCanvas()
-        stacked.addWidget(self.swipe_canvas)
-        
-        layout.addWidget(container)
+        layout.addWidget(self.keyboard)
         
         # Webcam preview below keyboard
         self.webcam_preview = QLabel()
@@ -158,7 +151,19 @@ class OverlayWindow(QMainWindow):
         self.webcam_preview.setMaximumHeight(150)
         self.webcam_preview.setScaledContents(True)
         layout.addWidget(self.webcam_preview)
+
+        # 2. Global Overlay Layer (Cursor & Path)
+        # Direct child of window, not in layout, to ensure full window coverage
+        from .keyboard_widget import SwipeCanvas
+        self.swipe_canvas = SwipeCanvas(self)
+        self.swipe_canvas.raise_()
     
+    def resizeEvent(self, event):
+        """Handle window resize to update overlay and caches."""
+        super().resizeEvent(event)
+        if hasattr(self, 'swipe_canvas'):
+            self.swipe_canvas.setGeometry(self.rect())
+            
     def _position_window(self):
         """Position window using a formula based on screen dimensions."""
         screen = QApplication.primaryScreen()
@@ -281,6 +286,12 @@ class OverlayWindow(QMainWindow):
             border: 1px solid {accent}40;
         }}
         
+        #KeyButton[prediction="true"][empty="true"] {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            color: transparent;
+        }}
+        
         #KeyButton[highlighted="true"] {{
             background-color: {accent};
             color: {accent_fg};
@@ -308,6 +319,11 @@ class OverlayWindow(QMainWindow):
             font-size: 20px;
         }}
         
+        #SendButton[hover="true"] {{
+            background-color: {accent};
+            border: 2px solid rgba(255, 255, 255, 200);
+        }}
+        
         #WebcamPreview {{
             background-color: rgba(0, 0, 0, 80);
             border: 1px solid rgba(100, 100, 120, 80);
@@ -332,17 +348,6 @@ class OverlayWindow(QMainWindow):
         else:
             self._apply_native_theme()
     
-    def _title_mouse_press(self, event):
-        """Handle title bar mouse press for dragging."""
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
-            event.accept()
-    
-    def _title_mouse_move(self, event):
-        """Handle title bar mouse move for dragging."""
-        if event.buttons() == Qt.LeftButton and self._drag_pos:
-            self.move(event.globalPos() - self._drag_pos)
-            event.accept()
     
     def set_position(self, position: str):
         """Set dock position ('left' or 'right')."""
@@ -350,12 +355,169 @@ class OverlayWindow(QMainWindow):
         self._position_window()
     
     def update_hand_position(self, x: float, y: float):
-        """Update keyboard based on hand position."""
+        """Update keyboard based on hand position (normalized 0-1 for whole window)."""
+        if not self.swipe_canvas or not self.swipe_canvas.window():
+            return
+            
         self.swipe_canvas.set_cursor(x, y)
-        # Convert to pixel coords using swipe canvas dimensions
-        px = int(x * self.swipe_canvas.width())
-        py = int(y * self.swipe_canvas.height())
-        self.keyboard.update_hand_position_pixels(px, py)
+        
+        # 1. Map to whole window pixel coordinates
+        # Since swipe_canvas covers CentralWidget, we use its size
+        w = self.swipe_canvas.width()
+        h = self.swipe_canvas.height()
+        if w < 1 or h < 1:
+            return
+            
+        px = int(x * w)
+        py = int(y * h)
+        
+        # Use global coordinates for robustness across stacked layers
+        global_pos = self.swipe_canvas.mapToGlobal(QPoint(px, py))
+        
+        if self._debug:
+            print(f"DEBUG_MAP: x,y=({x:.3f}, {y:.3f}) px,py=({px}, {py}) global=({global_pos.x()}, {global_pos.y()})")
+            print(f"DEBUG_GEO: Canvas={self.swipe_canvas.geometry()} Keyboard={self.keyboard.geometry()}")
+            print(f"DEBUG_MAP_ROOT: CanvasGlobal={self.swipe_canvas.mapToGlobal(QPoint(0,0))} KeyboardGlobal={self.keyboard.mapToGlobal(QPoint(0,0))}")
+
+        # 2. Check Send Button
+        if self.send_button and self.send_button.window():
+            btn_pos = self.send_button.mapFromGlobal(global_pos)
+            is_hovering_send = self.send_button.rect().contains(btn_pos)
+            
+            # Only update if property changed to avoid excessive style polish
+            old_hover = self.send_button.property("hover") == "true"
+            if is_hovering_send != old_hover:
+                self.send_button.setProperty("hover", "true" if is_hovering_send else "false")
+                self.send_button.style().unpolish(self.send_button)
+                self.send_button.style().polish(self.send_button)
+
+        # 3. Update Keyboard Key Highlighting
+        if self.keyboard and self.keyboard.window():
+            kb_pos = self.keyboard.mapFromGlobal(global_pos)
+            if self._debug:
+                print(f"DEBUG_HIT: kb_pos=({kb_pos.x()}, {kb_pos.y()})")
+            self.keyboard.update_hand_position_pixels(kb_pos.x(), kb_pos.y())
+    
+    def navigate_key(self, direction: str):
+        """
+        Navigate to adjacent key using D-pad direction.
+        
+        Args:
+            direction: 'up', 'down', 'left', or 'right'
+        """
+        self.keyboard.navigate_direction(direction)
+    
+    def select_current_key(self):
+        """Select the currently highlighted key (A button in controller mode)."""
+        # 1. Check if hovering Send button
+        if self.send_button.property("hover") == "true":
+            self._handle_send()
+            return
+
+        # 2. Check Keyboard
+        current = self.keyboard.current_key
+        if not current:
+            return
+        
+        # Handle special keys
+        if current in ["SHIFT", "⌫", "CLOSE", "?123", "ABC", "PRE1", "PRE2", "PRE3", "SPACE", "↵"]:
+            self.handle_special_key(current)
+        elif len(current) == 1:
+            # Normal letter/number/symbol - insert at cursor position
+            char = self._format_text(current)
+            self._insert_at_cursor(char)
+            
+            # Consume capitalization states
+            if self._shift_on or self._sentence_start:
+                self._shift_on = False
+                self._sentence_start = False
+                self._update_key_casing()
+            
+            # Predict completions based on current word at cursor
+            if self._layout_name == 'qwerty':
+                # Extract word being typed at cursor
+                word = self._get_word_at_cursor()
+                if word:
+                    top_words = self.prediction_engine.predict_prefix(word)
+                    top_words = [self._format_text(w) for w in top_words]
+                    self.set_predictions(top_words)
+                else:
+                    self.set_predictions([])
+    
+    def _insert_at_cursor(self, text: str):
+        """Insert text at the current cursor position."""
+        current_text = self.input_field.text()
+        pos = self.input_field.cursorPosition()
+        new_text = current_text[:pos] + text + current_text[pos:]
+        self.input_field.setText(new_text)
+        self.input_field.setCursorPosition(pos + len(text))
+        # Also update internal state
+        self._input_text = new_text
+        self._current_word = ""
+    
+    def _delete_at_cursor(self):
+        """Delete character before cursor position."""
+        current_text = self.input_field.text()
+        pos = self.input_field.cursorPosition()
+        if pos > 0:
+            new_text = current_text[:pos-1] + current_text[pos:]
+            self.input_field.setText(new_text)
+            self.input_field.setCursorPosition(pos - 1)
+            self._input_text = new_text
+            self._current_word = ""
+
+    def _delete_last_word_at_cursor(self, length: int):
+        """Delete specific number of characters before cursor position."""
+        current_text = self.input_field.text()
+        pos = self.input_field.cursorPosition()
+        if pos >= length:
+            new_text = current_text[:pos-length] + current_text[pos:]
+            self.input_field.setText(new_text)
+            self.input_field.setCursorPosition(pos - length)
+            self._input_text = new_text
+            self._current_word = ""
+    
+    def _get_word_at_cursor(self) -> str:
+        """Get the word being typed at the cursor position."""
+        text = self.input_field.text()
+        pos = self.input_field.cursorPosition()
+        # Find word start
+        start = pos
+        while start > 0 and text[start-1].isalpha():
+            start -= 1
+        return text[start:pos]
+    
+    def _replace_word_at_cursor(self, replacement: str):
+        """Replace the word at cursor with new text."""
+        text = self.input_field.text()
+        pos = self.input_field.cursorPosition()
+        # Find word boundaries
+        start = pos
+        while start > 0 and text[start-1].isalpha():
+            start -= 1
+        end = pos
+        while end < len(text) and text[end].isalpha():
+            end += 1
+            
+        # Replace the partial/full word with the full prediction
+        new_text = text[:start] + replacement + text[end:]
+        self.input_field.setText(new_text)
+        self.input_field.setCursorPosition(start + len(replacement))
+        self._input_text = new_text
+        self._current_word = replacement.strip()
+        self._last_swipe_time = time.time()
+
+    def _handle_cursor_changed(self):
+        """Handle cursor movement to update predictions context."""
+        if self._layout_name == 'qwerty':
+            word = self._get_word_at_cursor()
+            if word:
+                top_words = self.prediction_engine.predict_prefix(word)
+                formatted_words = [self._format_text(w) for w in top_words]
+                self.set_predictions(formatted_words)
+            else:
+                self.set_predictions([])
+
     
     def start_swipe(self, x: float, y: float):
         """Start a swipe gesture."""
@@ -384,7 +546,8 @@ class OverlayWindow(QMainWindow):
             print(f"Action: SENDING TEXT -> '{text}'")
             self._input_text = ""
             self._current_word = ""
-            self._update_display()
+            self.input_field.clear()
+            self._check_sentence_boundary()
             self.set_predictions([])
             
     def toggle_caps(self):
@@ -403,6 +566,11 @@ class OverlayWindow(QMainWindow):
         points = self.swipe_canvas._path_points.copy()
         raw_keys = self.keyboard.end_swipe()
         
+        # 1. Check Send Button interaction
+        if self.send_button.property("hover") == "true":
+            self._handle_send()
+            return ["SEND"]
+        
         if not raw_keys:
             return []
             
@@ -412,43 +580,37 @@ class OverlayWindow(QMainWindow):
             if key in ["SHIFT", "BACKSPACE", "CLOSE", "?123", "ABC", "PRE1", "PRE2", "PRE3", "SPACE"]:
                 self.handle_special_key(key)
             elif len(key) == 1:
-                # Normal letter/number/symbol tap
+                # Normal letter/number/symbol tap - insert at cursor
                 char = self._format_text(key)
-                self._current_word += char
-                self._update_display()
+                self._insert_at_cursor(char)
                 
                 # Consume capitalization states
                 if self._shift_on or self._sentence_start:
                     self._shift_on = False
                     self._sentence_start = False
                     self._update_key_casing()
-                
-                # Predict completions based on prefix
-                if self._layout_name == 'qwerty':
-                    top_words = self.prediction_engine.predict_prefix(self._current_word)
-                    # Format predictions to match current casing context
-                    top_words = [self._format_text(w) for w in top_words]
-                    self.set_predictions(top_words)
             return raw_keys
 
         # It's a swipe (shape-writing)
         top_words = self.prediction_engine.predict(points)
         if top_words:
-            # Swipe no longer auto-commits with space. 
-            # It sets the word as "pending" for manual confirmation or quick delete.
+            # Swipe sets the word as "pending" for smart backspace
             word = top_words[0]
-            self._current_word = self._format_text(word)
+            formatted_word = self._format_text(word)
             
-            # Consume capitalization states for the whole word
+            # Word-aware insertion
+            self._insert_at_cursor(formatted_word)
+            self._current_word = formatted_word # Store for smart backspace
+            
+            # Reset shift/sentence start
             if self._shift_on or self._sentence_start:
                 self._shift_on = False
                 self._sentence_start = False
                 self._update_key_casing()
 
             self._last_swipe_time = time.time()
-            self._update_display()
             
-            # Format all predictions
+            # Format and show predictions
             formatted_words = [self._format_text(w) for w in top_words]
             self.set_predictions(formatted_words)
             self._prediction_index = 0
@@ -475,10 +637,10 @@ class OverlayWindow(QMainWindow):
 
     def _check_sentence_boundary(self):
         """Determine if we are at the start of a new sentence."""
-        text = self._input_text.strip()
+        text = self.input_field.text().strip()
         if not text:
             self._sentence_start = True
-        elif text[-1] in ".!?":
+        elif text and text[-1] in ".!?":
             self._sentence_start = True
         else:
             self._sentence_start = False
@@ -492,12 +654,6 @@ class OverlayWindow(QMainWindow):
         self.keyboard.set_key_active("CAPS", self._caps_lock)
         self.keyboard.set_key_active("SHIFT", self._shift_on)
 
-    def _update_display(self):
-        """Update the input field with committed text + current word."""
-        full_text = self._input_text + self._current_word
-        self.input_field.setText(full_text)
-        self.input_field.setCursorPosition(len(full_text))
-
     def handle_special_key(self, key):
         """Handle functional keys like SHIFT, BACKSPACE, etc."""
         if key == "SHIFT":
@@ -505,42 +661,32 @@ class OverlayWindow(QMainWindow):
             self._shift_on = not self._shift_on
             self._update_key_casing()
             
-        elif key == "BACKSPACE":
-            # Smart Backspace: Delete whole word if immediately after swipe (2s window)
+        elif key in ["BACKSPACE", "⌫"]:
+            # Delete character before cursor (or whole word if just swiped)
             if self._current_word and (time.time() - self._last_swipe_time < 2.0):
+                # Smart Backspace: Delete whole word if immediately after swipe (2s window)
                 print(f"Action: Quick Delete word '{self._current_word}'")
+                self._delete_last_word_at_cursor(len(self._current_word))
                 self._current_word = ""
-                # Reset sentence start check if we delete a whole word
                 self._check_sentence_boundary()
-            elif self._current_word:
-                self._current_word = self._current_word[:-1]
-                if not self._current_word:
-                    self._check_sentence_boundary()
-            elif self._input_text:
-                self._input_text = self._input_text[:-1]
-                self._check_sentence_boundary()
-            
-            self._update_display()
-            
-            # Update prefix predictions
-            if self._current_word:
-                top_words = self.prediction_engine.predict_prefix(self._current_word)
-                formatted_words = [self._format_text(w) for w in top_words]
-                self.set_predictions(formatted_words)
             else:
-                self.set_predictions([])
+                # Delete at cursor position
+                self._delete_at_cursor()
+                self._check_sentence_boundary()
+            
+            # Predictions handled by _handle_cursor_changed connection
                 
         elif key == "SPACE":
-            # Committed current word + space
-            if self._current_word:
-                self._input_text += self._current_word
-                self._current_word = ""
-            
-            self._input_text += " "
-            self._shift_on = False # Reset shift on commitment
+            # Insert space at cursor position
+            self._insert_at_cursor(" ")
+            self._current_word = ""
+            self._shift_on = False
             self._check_sentence_boundary()
-            self._update_display()
             self.set_predictions([])
+        
+        elif key in ["ENTER", "↵"]:
+            # Send the text (same as clicking the send button)
+            self._handle_send()
             
         elif key == "CLOSE":
             QApplication.quit()
@@ -551,12 +697,10 @@ class OverlayWindow(QMainWindow):
             idx = int(key[3:]) - 1
             if idx < len(self._last_predictions):
                 word = self._last_predictions[idx]
-                # Selection replaces current partial word and adds a space
-                self._input_text += word + " "
-                self._current_word = ""
+                # Replace the word at cursor with prediction + space
+                self._replace_word_at_cursor(word + " ")
                 self._shift_on = False
                 self._check_sentence_boundary()
-                self._update_display()
                 self.set_predictions([])
                 print(f"Action: Selection committed '{word}'")
 
@@ -565,12 +709,53 @@ class OverlayWindow(QMainWindow):
         self._layout_name = layout_name
         self.keyboard.update_layout(get_layout(layout_name))
         
-        # Prediction only active for letters
-        if layout_name != 'qwerty':
+        # Prediction only active for qwerty; always sync to clear/restore labels
+        if layout_name == 'qwerty':
+            self.set_predictions(self._last_predictions)
+        else:
             self.set_predictions([])
+        
+        # Re-apply controller hints after layout change
+        if hasattr(self, '_controller_mode') and self._controller_mode:
+            QTimer.singleShot(100, lambda: self.keyboard.set_controller_hints(True))
             
         # Ensure coordinates are re-synced after layout settles
         QTimer.singleShot(250, self._sync_prediction_coordinates)
+    
+    def set_controller_mode(self, enabled: bool):
+        """Enable or disable controller mode (shows button hints)."""
+        self._controller_mode = enabled
+        self.keyboard.set_controller_hints(enabled)
+        
+        # Add hint to send button
+        if enabled:
+            from pathlib import Path
+            from PyQt5.QtSvg import QSvgWidget
+            from PyQt5.QtCore import Qt
+            
+            icon_path = Path(__file__).parent.parent.parent / "assets" / "icons" / "controller" / "xb_start.svg"
+            if icon_path.exists():
+                if not hasattr(self, '_send_hint') or self._send_hint is None:
+                    self._send_hint = QSvgWidget(self.send_button)
+                    self._send_hint.setAttribute(Qt.WA_TranslucentBackground)
+                self._send_hint.load(str(icon_path))
+                self._send_hint.setFixedSize(24, 10)
+                self._send_hint.move(8, 2)
+                self._send_hint.show()
+        elif hasattr(self, '_send_hint') and self._send_hint:
+            self._send_hint.hide()
+    
+    def move_text_cursor(self, direction: int):
+        """
+        Move the text cursor left or right.
+        
+        Args:
+            direction: -1 for left, 1 for right
+        """
+        # Get current cursor position
+        pos = self.input_field.cursorPosition()
+        new_pos = max(0, min(len(self.input_field.text()), pos + direction))
+        self.input_field.setCursorPosition(new_pos)
 
     def cycle_prediction(self):
         """Cycle through top 3 prediction results in the text field."""
@@ -615,3 +800,11 @@ class OverlayWindow(QMainWindow):
         qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
         self.webcam_preview.setPixmap(pixmap)
+    
+    def eventFilter(self, obj, event):
+        """Filter keyboard events to prevent typing in the input field."""
+        from PyQt5.QtCore import QEvent
+        if obj == self.input_field and event.type() == QEvent.KeyPress:
+            # Block all key presses to the input field
+            return True
+        return super().eventFilter(obj, event)

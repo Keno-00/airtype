@@ -12,18 +12,24 @@ from .layouts import get_layout, get_key_positions
 
 
 class KeyButton(QLabel):
-    """Individual key button."""
+    """Individual key button with optional controller hint icon."""
     
     def __init__(self, key_data, parent=None):
         label = key_data[0] if isinstance(key_data, tuple) else key_data
-        super().__init__(label, parent)
+        # Prediction keys start empty to avoid flashing PRE1/PRE2/PRE3 labels
+        display_label = "" if label.startswith("PRE") else label
+        super().__init__(display_label, parent)
         self.key = label
         self.is_special = key_data[2] if isinstance(key_data, tuple) else False
         self._highlighted = False
+        self._hint_icon = None  # Controller button hint icon
         self.setAlignment(Qt.AlignCenter)
         self.setObjectName("KeyButton")
         if self.is_special:
             self.setProperty("special", "true")
+            if label.startswith("PRE"):
+                self.setProperty("prediction", "true")
+                self.setProperty("empty", "true")
             
             # Status dot for functional keys (SHIFT, CAPS, etc)
             self._dot = QFrame(self)
@@ -56,6 +62,51 @@ class KeyButton(QLabel):
         if self._highlighted != highlighted:
             self._highlighted = highlighted
             self._update_style()
+    
+    def set_controller_hint(self, icon_path: str):
+        """
+        Set a controller button hint icon to display in the top-right corner.
+        
+        Args:
+            icon_path: Path to SVG icon file, or None to clear
+        """
+        if icon_path:
+            from PyQt5.QtSvg import QSvgWidget, QSvgRenderer
+            from PyQt5.QtCore import QSize
+            
+            if self._hint_icon is None:
+                self._hint_icon = QSvgWidget(self)
+                self._hint_icon.setAttribute(Qt.WA_TranslucentBackground)
+            
+            self._hint_icon.load(str(icon_path))
+            
+            # Get native size and scale to fit height of 12px while preserving aspect ratio
+            renderer = self._hint_icon.renderer()
+            if renderer.isValid():
+                native_size = renderer.defaultSize()
+                target_height = 12
+                aspect = native_size.width() / max(1, native_size.height())
+                target_width = int(target_height * aspect)
+                self._hint_icon.setFixedSize(target_width, target_height)
+            else:
+                self._hint_icon.setFixedSize(14, 12)
+            
+            # Position in top-right corner
+            self._hint_icon.move(self.width() - self._hint_icon.width() - 2, 2)
+            self._hint_icon.show()
+        elif self._hint_icon:
+            self._hint_icon.hide()
+    
+    def clear_controller_hint(self):
+        """Remove the controller hint icon."""
+        if self._hint_icon:
+            self._hint_icon.hide()
+    
+    def resizeEvent(self, event):
+        """Reposition hint icon on resize."""
+        super().resizeEvent(event)
+        if self._hint_icon and self._hint_icon.isVisible():
+            self._hint_icon.move(self.width() - self._hint_icon.width() - 2, 2)
     
     def _update_style(self):
         """Update visual style based on state."""
@@ -262,7 +313,7 @@ class KeyboardWidget(QWidget):
     def _setup_ui(self):
         """Build the keyboard UI."""
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
         
         self.keyboard_container = QWidget()
@@ -317,6 +368,23 @@ class KeyboardWidget(QWidget):
         """Set a specific key's active indicator."""
         if key_label in self._keys:
             self._keys[key_label].set_active(active)
+    
+    def set_controller_hints(self, enabled: bool):
+        """
+        Enable or disable controller button hints on relevant keys.
+        
+        Args:
+            enabled: True to show hints, False to hide them
+        """
+        if enabled:
+            from .button_hints import get_hint_icon_path
+            for key_label, btn in self._keys.items():
+                icon_path = get_hint_icon_path(key_label)
+                if icon_path:
+                    btn.set_controller_hint(icon_path)
+        else:
+            for btn in self._keys.values():
+                btn.clear_controller_hint()
 
     def update_layout(self, new_layout):
         """Switch to a new keyboard layout."""
@@ -347,17 +415,29 @@ class KeyboardWidget(QWidget):
         super().resizeEvent(event)
         self._update_key_rects_cache()
     
-    def get_key_centers(self) -> Dict[str, Tuple[float, float]]:
-        """Return actual normalized (0.0-1.0) centers of keys in the widget."""
+    def get_key_centers(self, relative_to: QWidget = None) -> Dict[str, Tuple[float, float]]:
+        """Return actual normalized centers of keys, optionally relative to another widget."""
         centers = {}
-        w = float(self.width())
-        h = float(self.height())
-        if w < 1 or h < 1:
+        ref = relative_to or self
+        
+        # Safety: Ensure widgets are valid and initialized
+        if ref.width() < 1 or ref.height() < 1:
+            return {}
+        if not ref.window() or not self.window():
             return {}
             
+        w = float(ref.width())
+        h = float(ref.height())
+            
         for key, rect in self._key_rects_cache.items():
-            center = rect.center()
-            centers[key] = (center.x() / w, center.y() / h)
+            center_local = rect.center().toPoint()
+            if relative_to:
+                # Use global mapping for maximum robustness across layers
+                global_pos = self.mapToGlobal(center_local)
+                center_ref = ref.mapFromGlobal(global_pos)
+                centers[key] = (center_ref.x() / w, center_ref.y() / h)
+            else:
+                centers[key] = (center_local.x() / w, center_local.y() / h)
         return centers
     
     def update_hand_position_pixels(self, px: int, py: int):
@@ -383,6 +463,99 @@ class KeyboardWidget(QWidget):
     def current_key(self) -> Optional[str]:
         """Return the label of the currently hovered key."""
         return self._current_key
+    
+    def navigate_direction(self, direction: str):
+        """
+        Navigate to the nearest key in the specified direction.
+        
+        Args:
+            direction: 'up', 'down', 'left', or 'right'
+        """
+        if not self._key_rects_cache:
+            return
+        
+        # If no key is currently selected, select the center-ish key
+        if not self._current_key:
+            # Find a key near the center
+            center_x = self.width() / 2
+            center_y = self.height() / 2
+            best_key = None
+            best_dist = float('inf')
+            
+            for key, rect in self._key_rects_cache.items():
+                kc = rect.center()
+                dist = (kc.x() - center_x)**2 + (kc.y() - center_y)**2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_key = key
+            
+            if best_key:
+                self._set_current_key(best_key)
+            return
+        
+        # Get current key position
+        current_rect = self._key_rects_cache.get(self._current_key)
+        if not current_rect:
+            return
+        
+        current_center = current_rect.center()
+        cx, cy = current_center.x(), current_center.y()
+        
+        # Find best candidate in the specified direction
+        best_key = None
+        best_score = float('inf')
+        
+        for key, rect in self._key_rects_cache.items():
+            if key == self._current_key:
+                continue
+            
+            kc = rect.center()
+            dx = kc.x() - cx
+            dy = kc.y() - cy
+            
+            # Check if key is in the correct direction
+            in_direction = False
+            primary_dist = 0
+            cross_dist = 0
+            
+            if direction == 'up' and dy < -5:
+                in_direction = True
+                primary_dist = abs(dy)
+                cross_dist = abs(dx)
+            elif direction == 'down' and dy > 5:
+                in_direction = True
+                primary_dist = abs(dy)
+                cross_dist = abs(dx)
+            elif direction == 'left' and dx < -5:
+                in_direction = True
+                primary_dist = abs(dx)
+                cross_dist = abs(dy)
+            elif direction == 'right' and dx > 5:
+                in_direction = True
+                primary_dist = abs(dx)
+                cross_dist = abs(dy)
+            
+            if in_direction:
+                # Score: prioritize keys that are more aligned (lower cross distance)
+                # and closer in the primary direction
+                score = primary_dist + cross_dist * 2
+                if score < best_score:
+                    best_score = score
+                    best_key = key
+        
+        if best_key:
+            self._set_current_key(best_key)
+    
+    def _set_current_key(self, key: str):
+        """Set the current key and update highlighting."""
+        if self._current_key and self._current_key in self._keys:
+            self._keys[self._current_key].set_highlighted(False)
+        
+        self._current_key = key
+        
+        if key and key in self._keys:
+            self._keys[key].set_highlighted(True)
+            self.key_hovered.emit(key)
     
     def start_swipe_pixels(self, px: int, py: int):
         """Start tracking a swipe at pixel position."""
@@ -473,11 +646,12 @@ class KeyboardWidget(QWidget):
             key_name = f"PRE{i+1}"
             if key_name in self._keys:
                 word = words[i] if i < len(words) else ""
-                self._keys[key_name].setText(word if word else f"[{i+1}]")
+                # Show blank text when no prediction
+                self._keys[key_name].setText(word if word else "")
                 # Ensure they don't look like normal keys
                 self._keys[key_name].setProperty("prediction", "true")
-                self._keys[key_name].style().unpolish(self._keys[key_name])
-                self._keys[key_name].style().polish(self._keys[key_name])
+                self._keys[key_name].setProperty("empty", "true" if not word else "false")
+                self._keys[key_name]._update_style()
     
     def highlight_prediction(self, index: int):
         """Highlight a specific prediction key."""
