@@ -1,0 +1,54 @@
+# AirType Configuration
+# Optimized defaults for couch distance (~2-3 meters from webcam)
+
+camera:
+  device_id: 0              # Camera device index (0 = default webcam)
+  width: 1280               # Higher resolution helps at distance
+  height: 720
+  fps: 30                   # Target framerate
+
+mediapipe:
+  model_complexity: 1       # 0=lite, 1=full (better for distance)
+  max_num_hands: 1          # Single hand for input
+  min_detection_confidence: 0.35  # Slightly lower for distance recovery
+  min_tracking_confidence: 0.35   # Less aggressive dropping
+  
+gestures:
+  # Pinch detection
+  pinch_threshold: 0.5       # Much higher (easier to start)
+  pinch_release: 0.65        # High hysteresis
+  pinch_smoothing: 0.2       # Reduced to 0.2 for instant response
+  pinch_grace: 5             # Reduced buffer for snappier ends
+  
+  # Finger counting thresholds
+  finger_curl_threshold: 0.6    # Angle ratio for curled vs extended
+  
+  # Fist detection
+  fist_threshold: 0.7       # Min curled fingers ratio for fist
+  
+  # Swipe detection
+  swipe_min_distance: 0.15  # Normalized hand movement threshold
+  swipe_max_frames: 15      # Max frames to complete swipe
+  swipe_cooldown: 10        # Frames between swipes
+  
+  # Cursor movement (transformation of hand pos to screen pos)
+  cursor_sensitivity: 2.5   # Increased to 2.5 for easier reach
+  cursor_exponent: 1.0      # Linear
+  smoothing_factor: 0.4     # Reduced to 0.4 to remove lag/heaviness
+  
+  # Motion Dynamics (Relative Mode)
+  motion_mode: "relative"
+  motion_deadzone: 0.001    # Half the deadzone
+  motion_accel: 5.0         # Increased to 5.0 for large movements
+  motion_bend_reset: True   # Hard reset at bends for precision
+
+input:
+  mode: webcam              # 'webcam' or 'controller'
+  
+keyboard:
+  layout: qwerty            # 'qwerty', 'dvorak', 'colemak'
+  
+ui:
+  position: right           # 'left' or 'right' panel position
+  theme: default            # Theme name or path to .qss file
+  debug_overlay: false      # Show hand landmarks overlay
