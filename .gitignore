@@ -38,3 +38,7 @@ config.local.yaml
 
 # Large model files (track .task files via LFS if needed)
 # models/*.task is tracked
+
+# Todo
+todo
+todo.md

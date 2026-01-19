@@ -2,23 +2,26 @@
 # Optimized defaults for couch distance (~2-3 meters from webcam)
 
 camera:
-  device_id: 0              # Camera device index (0 = default webcam)
-  width: 1280               # Higher resolution helps at distance
-  height: 720
-  fps: 30                   # Target framerate
+  device_id: 0              # Reverted to 0 as 1 was not found
+  width: 640                # Standard tracking resolution
+  height: 480
+  fps: 120                  # Target 120 FPS capture
 
 mediapipe:
-  model_complexity: 1       # 0=lite, 1=full (better for distance)
+  model_complexity: 0       # 0=lite (fastest), 1=full
   max_num_hands: 1          # Single hand for input
-  min_detection_confidence: 0.35  # Slightly lower for distance recovery
-  min_tracking_confidence: 0.35   # Less aggressive dropping
+  min_detection_confidence: 0.4  # Slightly more strict for stability
+  min_tracking_confidence: 0.4   # Slightly more strict for stability
   
 gestures:
   # Pinch detection
   pinch_threshold: 0.5       # Much higher (easier to start)
   pinch_release: 0.65        # High hysteresis
-  pinch_smoothing: 0.2       # Reduced to 0.2 for instant response
+  pinch_smoothing: 0.3       # Moderate smoothing for pinch detection
   pinch_grace: 5             # Reduced buffer for snappier ends
+  fist_release_grace: 5      # Buffer for releasing fist swipes
+  fist_release_fingers: 3    # Fingers required to release a sticky fist
+  landmark_smoothing: 0.6    # Low-Pass Filter for jitter (0=off, 1=max)
   
   # Finger counting thresholds
   finger_curl_threshold: 0.6    # Angle ratio for curled vs extended
@@ -32,15 +35,29 @@ gestures:
   swipe_cooldown: 10        # Frames between swipes
   
   # Cursor movement (transformation of hand pos to screen pos)
-  cursor_sensitivity: 2.5   # Increased to 2.5 for easier reach
-  cursor_exponent: 1.0      # Linear
-  smoothing_factor: 0.4     # Reduced to 0.4 to remove lag/heaviness
+  cursor_sensitivity: 2.2   # Calibrated for Absolute range
+  cursor_exponent: 1.0      # Strictly linear (1.0)
+  smoothing_factor: 0.4     # Increased for rock-solid stability
   
-  # Motion Dynamics (Relative Mode)
-  motion_mode: "relative"
-  motion_deadzone: 0.001    # Half the deadzone
-  motion_accel: 5.0         # Increased to 5.0 for large movements
+  # Spring-damper physics (Stabilized via 4x sub-stepping)
+  cursor_spring: 800.0      # Snappier return
+  cursor_damping: 20.0      # Increased for high-frequency jitter suppression
+  cursor_mass: 0.1          # Moderate mass for "grounded" feel
+  
+  # Motion Dynamics (Now Absolute)
+  motion_mode: "absolute"   # Using Absolute for Direct Drive feel
+  motion_deadzone: 0.002    # Standard jitter filter
+  motion_accel: 1.0         # Not used in absolute mode, but kept standard 
   motion_bend_reset: True   # Hard reset at bends for precision
+  
+  # Stillness lock (shake filtering) - values are ratios of hand_width
+  use_stillness_lock: false  # Disabled per user feedback
+  stillness_radius: 0.05    # Tightened
+  stillness_time: 0.1       # Fast lock induction
+  unlock_distance: 0.08     # Very easy breakout 
+  
+  # UI Performance
+  show_preview: true        # Enable/Disable webcam preview window
 
 input:
   mode: webcam              # 'webcam' or 'controller'

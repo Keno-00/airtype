@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 import time
 import cv2
+import numpy as np
 import mediapipe as mp
 
 from .config import Config, CameraConfig, MediaPipeConfig
@@ -168,9 +169,28 @@ class HandTracker:
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._camera_config.height)
         self._cap.set(cv2.CAP_PROP_FPS, self._camera_config.fps)
         
+        # Determine delegate (GPU with CPU fallback)
+        try:
+            delegate = BaseOptions.Delegate.GPU
+            print("Attempting GPU delegate for MediaPipe...")
+        except AttributeError:
+            delegate = None
+            print("GPU delegate not available, using CPU")
+        
         # Initialize MediaPipe Hand Landmarker with VIDEO mode
+        base_opts = BaseOptions(model_asset_path=str(self._model_path))
+        if delegate is not None:
+            try:
+                base_opts = BaseOptions(
+                    model_asset_path=str(self._model_path),
+                    delegate=delegate
+                )
+                print("GPU delegate enabled for MediaPipe")
+            except Exception as e:
+                print(f"GPU delegate failed: {e}, using CPU")
+        
         options = HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=str(self._model_path)),
+            base_options=base_opts,
             running_mode=VisionRunningMode.VIDEO,
             num_hands=self._mp_config.max_num_hands,
             min_hand_detection_confidence=self._mp_config.min_detection_confidence,
@@ -200,37 +220,37 @@ class HandTracker:
     def get_landmarks(self) -> Optional[HandLandmarks]:
         """
         Capture frame and detect hand landmarks.
-        
-        Returns:
-            HandLandmarks if hand detected, None otherwise.
         """
         if not self._is_running or self._cap is None or self._landmarker is None:
             return None
         
+        # Standard read
         ret, frame = self._cap.read()
         if not ret:
             return None
         
         self._frame_count += 1
         
-        # Flip horizontally for mirror effect (more natural for user)
+        # Mirror horizontally
         frame = cv2.flip(frame, 1)
         self._last_frame = frame
         
         # Convert BGR to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
+        # Optimization: Mark the image as not writeable (zero-copy)
+        rgb_frame.flags.writeable = False
+        
         # Create MediaPipe Image
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         
-        # Calculate strictly monotonic timestamp in milliseconds 
-        # (MediaPipe on Windows needs > 0 and strictly increasing)
+        # Calculate strictly monotonic timestamp
         timestamp_ms = int((time.perf_counter() - self._start_perf) * 1000)
         if timestamp_ms <= self._last_timestamp_ms:
             timestamp_ms = self._last_timestamp_ms + 1
         self._last_timestamp_ms = timestamp_ms
         
-        # Process frame using VIDEO mode
+        # Process frame
         result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
         
         if not result.hand_landmarks:
@@ -254,13 +274,15 @@ class HandTracker:
     
     def get_frame_with_landmarks(
         self, 
-        landmarks: Optional[HandLandmarks] = None
+        landmarks: Optional[HandLandmarks] = None,
+        black_background: bool = False
     ) -> Optional[cv2.Mat]:
         """
         Get last frame with optional landmark overlay for debugging.
         
         Args:
             landmarks: If provided, draw landmarks on frame.
+            black_background: If True, draw on black instead of camera image.
             
         Returns:
             Frame with landmarks drawn, or None if no frame available.
@@ -268,7 +290,10 @@ class HandTracker:
         if self._last_frame is None:
             return None
         
-        frame = self._last_frame.copy()
+        if black_background:
+            frame = np.zeros_like(self._last_frame)
+        else:
+            frame = self._last_frame.copy()
         
         if landmarks is not None:
             # Draw landmarks

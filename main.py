@@ -124,6 +124,8 @@ def run_webcam_debug(config):
 
 def run_webcam_mode(config):
     """Run AirType in webcam input mode with UI overlay (Multithreaded)."""
+    import signal
+    import atexit
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QThread
     from webcam import WebcamWorker, Gesture
@@ -145,6 +147,25 @@ def run_webcam_mode(config):
     thread = QThread()
     worker = WebcamWorker(config)
     worker.moveToThread(thread)
+    
+    def cleanup():
+        """Ensure camera is released on exit."""
+        print("\nCleaning up camera resources...")
+        worker.stop_process()
+        thread.quit()
+        thread.wait(2000)
+        print("Cleanup complete.")
+    
+    # Register cleanup for various exit scenarios
+    atexit.register(cleanup)
+    
+    def signal_handler(signum, frame):
+        """Handle Ctrl+C and kill signals gracefully."""
+        print(f"\nReceived signal {signum}, shutting down...")
+        app.quit()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     def handle_gesture(state):
         """Handle gesture signals from background worker."""
@@ -180,6 +201,7 @@ def run_webcam_mode(config):
     thread.started.connect(worker.start_process)
     worker.gesture_detected.connect(handle_gesture)
     worker.hand_lost.connect(handle_hand_lost)
+    worker.frame_ready.connect(overlay.set_webcam_frame)
     worker.error.connect(lambda msg: print(f"WORKER ERROR: {msg}"))
     
     # Start thread
@@ -188,10 +210,8 @@ def run_webcam_mode(config):
     try:
         result = app.exec_()
     finally:
-        # Graceful cleanup
-        worker.stop_process()
-        thread.quit()
-        thread.wait(1000)
+        cleanup()
+        atexit.unregister(cleanup)  # Avoid double cleanup
     
     return result
 

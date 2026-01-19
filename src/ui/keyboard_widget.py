@@ -24,7 +24,32 @@ class KeyButton(QLabel):
         self.setObjectName("KeyButton")
         if self.is_special:
             self.setProperty("special", "true")
+            
+            # Status dot for functional keys (SHIFT, CAPS, etc)
+            self._dot = QFrame(self)
+            self._dot.setFixedSize(6, 6)
+            self._dot.setObjectName("KeyStatusDot")
+            self._dot.move(4, 4)
+            self._dot.hide()
+            
+        self._active = False
+        self._set_case(False) # Default to lowercase for alpha keys
         self._update_style()
+    
+    def set_active(self, active: bool):
+        """Set key active state (for SHIFT, CAPS, etc)."""
+        if self.is_special and hasattr(self, '_dot'):
+            self._active = active
+            if active:
+                self._dot.show()
+            else:
+                self._dot.hide()
+            self._update_style()
+
+    def _set_case(self, uppercase: bool):
+        """Update label text case."""
+        if not self.is_special and len(self.key) == 1 and self.key.isalpha():
+            self.setText(self.key.upper() if uppercase else self.key.lower())
     
     def set_highlighted(self, highlighted: bool):
         """Set key highlight state."""
@@ -115,15 +140,16 @@ class SwipeCanvas(QWidget):
         
         w, h = self.width(), self.height()
         
-        # Draw swipe path
+        # Draw swipe path with Catmull-Rom spline smoothing
         if self._path_points and self._show_path:
             pen = QPen(QColor(100, 200, 255, 200))
             pen.setWidth(4)
             painter.setPen(pen)
             
             if len(self._path_points) >= 2:
-                # Optimized drawing using drawPolyline instead of QPainterPath
-                points = [QPoint(int(px * w), int(py * h)) for px, py in self._path_points]
+                # Apply Catmull-Rom spline smoothing for jelly-like paths
+                smoothed = self._catmull_rom_spline(self._path_points, segments=4)
+                points = [QPoint(int(px * w), int(py * h)) for px, py in smoothed]
                 painter.drawPolyline(*points)
             
             # Draw path endpoint highlight
@@ -153,57 +179,60 @@ class SwipeCanvas(QWidget):
             painter.setPen(QPen(QColor(255, 200, 100, 150), 1))
             painter.drawLine(px - 20, py, px + 20, py)
             painter.drawLine(px, py - 20, px, py + 20)
-
-
-class PredictionBar(QWidget):
-    """Word prediction display with 3 slots."""
     
-    prediction_selected = pyqtSignal(int)  # Emits 0, 1, or 2
-    
-    def __init__(self, parent_keyboard=None):
-        super().__init__(parent_keyboard)
-        self.parent_keyboard = parent_keyboard
-        self.setObjectName("PredictionBar")
+    def _catmull_rom_spline(
+        self, 
+        points: List[Tuple[float, float]], 
+        segments: int = 4
+    ) -> List[Tuple[float, float]]:
+        """
+        Generate smooth Catmull-Rom spline through control points.
         
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(10)
-        
-        self._slots: List[QLabel] = []
-        for i in range(3):
-            slot = QLabel(f"[{i+1}]")
-            slot.setObjectName("PredictionSlot")
-            slot.setAlignment(Qt.AlignCenter)
-            slot.setMinimumHeight(40)
-            self._slots.append(slot)
-            layout.addWidget(slot)
-    
-    def set_predictions(self, words: List[str]):
-        """Set word predictions (up to 3) on both bar and integrated keys."""
-        for i, slot in enumerate(self._slots):
-            word = words[i] if i < len(words) else ""
-            label = f"[{i+1}] {word}" if word else f"[{i+1}]"
-            slot.setText(label)
+        Args:
+            points: List of (x, y) control points
+            segments: Number of interpolated points between each control point
             
-            # Also update integrated layout keys (PRE1, PRE2, PRE3)
-            key_name = f"PRE{i+1}"
-            if key_name in self.parent_keyboard._keys:
-                self.parent_keyboard._keys[key_name].setText(word if word else f"[{i+1}]")
-    
-    def clear(self):
-        """Clear all predictions."""
-        for i, slot in enumerate(self._slots):
-            slot.setText(f"[{i+1}]")
-    
-    def highlight_slot(self, index: int):
-        """Highlight a prediction slot (0, 1, or 2)."""
-        for i, slot in enumerate(self._slots):
-            if i == index:
-                slot.setProperty("highlighted", "true")
-            else:
-                slot.setProperty("highlighted", "false")
-            slot.style().unpolish(slot)
-            slot.style().polish(slot)
+        Returns:
+            Smoothed list of points
+        """
+        if len(points) < 2:
+            return points
+        if len(points) == 2:
+            return points  # Can't create spline with just 2 points
+        
+        result = []
+        
+        # Extend endpoints to create tangents at start/end
+        extended = [points[0]] + list(points) + [points[-1]]
+        
+        for i in range(1, len(extended) - 2):
+            p0 = extended[i - 1]
+            p1 = extended[i]
+            p2 = extended[i + 1]
+            p3 = extended[i + 2]
+            
+            for t_idx in range(segments):
+                t = t_idx / segments
+                t2 = t * t
+                t3 = t2 * t
+                
+                # Catmull-Rom basis functions
+                b0 = -0.5*t3 + t2 - 0.5*t
+                b1 = 1.5*t3 - 2.5*t2 + 1.0
+                b2 = -1.5*t3 + 2.0*t2 + 0.5*t
+                b3 = 0.5*t3 - 0.5*t2
+                
+                x = b0*p0[0] + b1*p1[0] + b2*p2[0] + b3*p3[0]
+                y = b0*p0[1] + b1*p1[1] + b2*p2[1] + b3*p3[1]
+                result.append((x, y))
+        
+        # Add the final point
+        result.append(points[-1])
+        
+        return result
+
+
+# PredictionBar removed - functionality consolidated into KeyboardWidget and PRE keys
 
 
 class KeyboardWidget(QWidget):
@@ -235,9 +264,6 @@ class KeyboardWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(5)
-        
-        self.prediction_bar = PredictionBar(self)
-        main_layout.addWidget(self.prediction_bar)
         
         self.keyboard_container = QWidget()
         self.keyboard_container.setObjectName("KeyboardContainer")
@@ -274,6 +300,23 @@ class KeyboardWidget(QWidget):
             
             row_layout.addStretch()
             self.container_layout.addWidget(row_widget)
+
+    def set_shift_mode(self, shift_on: bool, caps_lock: bool):
+        """Update all alpha key labels based on shift/caps state."""
+        uppercase = shift_on or caps_lock
+        for key, btn in self._keys.items():
+            btn._set_case(uppercase)
+            
+            # Update specific status dots
+            if key == "SHIFT":
+                btn.set_active(shift_on)
+            elif key == "CAPS": # Layout might use "CAPS" or we check SHIFT for caps logic
+                pass
+                
+    def set_key_active(self, key_label: str, active: bool):
+        """Set a specific key's active indicator."""
+        if key_label in self._keys:
+            self._keys[key_label].set_active(active)
 
     def update_layout(self, new_layout):
         """Switch to a new keyboard layout."""
@@ -425,10 +468,22 @@ class KeyboardWidget(QWidget):
             key.set_highlighted(False)
     
     def set_predictions(self, words: List[str]):
-        """Update the prediction bar text."""
-        self.prediction_bar.set_predictions(words)
+        """Update the integrated prediction keys (PRE1, PRE2, PRE3)."""
+        for i in range(3):
+            key_name = f"PRE{i+1}"
+            if key_name in self._keys:
+                word = words[i] if i < len(words) else ""
+                self._keys[key_name].setText(word if word else f"[{i+1}]")
+                # Ensure they don't look like normal keys
+                self._keys[key_name].setProperty("prediction", "true")
+                self._keys[key_name].style().unpolish(self._keys[key_name])
+                self._keys[key_name].style().polish(self._keys[key_name])
     
     def highlight_prediction(self, index: int):
-        """Highlight a specific slot in prediction bar."""
-        self.prediction_bar.highlight_slot(index)
+        """Highlight a specific prediction key."""
+        for i in range(3):
+            key_name = f"PRE{i+1}"
+            if key_name in self._keys:
+                btn = self._keys[key_name]
+                btn.set_highlighted(i == index)
 

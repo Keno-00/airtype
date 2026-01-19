@@ -30,6 +30,9 @@ class GestureConfig:
     pinch_release: float = 0.45
     pinch_smoothing: float = 0.5   # EMA smoothing for the pinch distance itself
     pinch_grace: int = 5           # Frames of grace before ending pinch
+    fist_release_grace: int = 5    # Frames of grace before ending fist swipe
+    fist_release_fingers: int = 3  # Fingers to extend to release a "sticky" fist
+    landmark_smoothing: float = 0.6 # Low Pass Filter for raw hand jitter (0=off, 1=max)
     finger_curl_threshold: float = 0.6
     fist_threshold: float = 0.7
     swipe_min_distance: float = 0.15
@@ -41,11 +44,28 @@ class GestureConfig:
     cursor_exponent: float = 1.0     # Power (1.0 = linear, 2.0 = quadratic)
     smoothing_factor: float = 0.5    # EMA smoothing (0 = off, 1 = max)
     
+    # Spring-damper physics for "jelly" cursor feel
+    cursor_spring: float = 12.0      # Spring stiffness (higher = snappier)
+    cursor_damping: float = 8.0      # Damping coefficient (higher = less oscillation)
+    cursor_mass: float = 1.0         # Virtual mass (higher = more inertia)
+    
     # Motion dynamics (Relative/Delta based)
     motion_mode: str = "absolute"    # "absolute" or "relative"
     motion_deadzone: float = 0.002   # Min movement to register (0-1 scale)
     motion_accel: float = 2.0        # How much gain increases with distance from anchor
     motion_bend_reset: bool = True   # Reset acceleration at bends
+    
+    # Stillness lock (shake filtering) - values are ratios of hand_width
+    use_stillness_lock: bool = True  # Whether to lock cursor when hand is still
+    stillness_radius: float = 0.15   # Movement threshold to be "still"
+    stillness_time: float = 0.12     # Seconds before locking cursor
+    unlock_distance: float = 0.25    # Distance to unlock (ratio of hand_width)
+    
+    # GPU acceleration
+    use_gpu: bool = True             # Try to use GPU delegate
+    
+    # UI Performance
+    show_preview: bool = True        # Whether to emit frames for the webcam preview
 
 
 @dataclass

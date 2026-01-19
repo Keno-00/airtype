@@ -34,6 +34,24 @@ class PredictionEngine:
             # Fallback/Debug dictionary if file missing
             self._dictionary = {"the": 1, "to": 2, "and": 3, "a": 4, "of": 5}
             
+    def predict_prefix(self, prefix: str, top_n: int = 3) -> List[str]:
+        """
+        Predict top N words that start with the given prefix (incremental typing).
+        prefix: Lowercase string to match.
+        """
+        if not prefix:
+            return []
+            
+        matches = []
+        prefix = prefix.lower()
+        for word, rank in self._dictionary.items():
+            if word.startswith(prefix):
+                matches.append((word, rank))
+        
+        # Sort by rank (lower is better/more frequent)
+        matches.sort(key=lambda x: x[1])
+        return [m[0] for m in matches[:top_n]]
+
     def predict(self, raw_points: List[Tuple[float, float]], top_n: int = 3) -> List[str]:
         """
         Predict top N words for a given swipe path.
@@ -99,6 +117,23 @@ class PredictionEngine:
         if len(points) < 3:
             return points
             
+        # 0. Path Simplification (Distance Skip)
+        # Only keep points that are at least 0.02 units apart to ignore micro-jitter
+        simplified = [points[0]]
+        for p in points[1:]:
+            prev = simplified[-1]
+            dist = math.sqrt((p[0] - prev[0])**2 + (p[1] - prev[1])**2)
+            if dist > 0.02:
+                simplified.append(p)
+        
+        # Ensure last point is included if it was skipped
+        if len(simplified) > 1 and simplified[-1] != points[-1]:
+            simplified.append(points[-1])
+            
+        if len(simplified) < 3:
+            return simplified
+            
+        points = simplified
         features = [points[0]]
         
         # Curvature detection (looking for sharp changes in direction)
@@ -122,9 +157,8 @@ class PredictionEngine:
             cos_theta = (v1[0]*v2[0] + v1[1]*v2[1]) / (m1 * m2)
             cos_theta = max(-1.0, min(1.0, cos_theta))
             
-            # If angle is sharp (e.g. < 120 degrees -> cos < -0.5 is very sharp, 
-            # but we want "bends" so maybe cos < 0.7 which is ~45 deg turn)
-            if cos_theta < 0.8: 
+            # Tightened threshold for more intentional corners (0.8 -> 0.75)
+            if cos_theta < 0.75: 
                 features.append(p_curr)
                 
         features.append(points[-1])
@@ -176,21 +210,35 @@ class PredictionEngine:
             path_idx = best_idx 
             
         # 5. Combined Scoring
+        # Match 1: Word Alignment (How well the word keys fit the path)
         avg_dist = total_dist / len(word_positions)
         
+        # Match 2: Path Coverage (How well the path features fit the word)
+        # Prevents short frequent words from winning on long complex paths
+        coverage_dist = 0
+        for fx, fy in path_features:
+            min_d = float('inf')
+            for wx, wy in word_positions:
+                d = (fx - wx)**2 + (fy - wy)**2
+                if d < min_d: min_d = d
+            coverage_dist += math.sqrt(min_d)
+        coverage_penalty = (coverage_dist / len(path_features)) * 2.0
+        
         # Length penalty based on DISTINCT keys (HELO = 4 keys vs 4 features)
-        length_penalty = abs(len(distinct_word_keys) - len(path_features)) * 0.25
+        # Increased to more strongly favor structural matching
+        length_penalty = abs(len(distinct_word_keys) - len(path_features)) * 0.35
         
         # Physical path distance penalty
         len_ratio = path_len / (word_len + 0.05)
         path_len_penalty = 0.5 if (len_ratio < 0.4 or len_ratio > 3.0) else 0.0
         
-        anchor_penalty = (start_dist + end_dist) * 12.0
+        # Anchor Check (Start/End must be very close)
+        anchor_penalty = (start_dist + end_dist) * 15.0
         
-        # 6. Frequency weighting
-        freq_factor = math.log10(rank + 1) * 0.05
+        # 6. Frequency weighting - Balanced for common vs structural match
+        freq_factor = math.log10(rank + 1) * 0.10
         
-        return avg_dist + length_penalty + anchor_penalty + freq_factor + path_len_penalty
+        return avg_dist + coverage_penalty + length_penalty + anchor_penalty + freq_factor + path_len_penalty
 
     def _get_nearest_key(self, pos: Tuple[float, float]) -> str:
         """Find the key closest to a given normalized position."""
